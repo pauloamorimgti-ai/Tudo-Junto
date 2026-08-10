@@ -52,9 +52,11 @@ export async function POST(req: NextRequest) {
 
     const { provider, modelString } = resolveModel(resolvedModelId)
 
-    // Save conversation title on first message
+    // FIX: Save title from the FIRST user message (messages[0]) only on first turn
+    // messages.length === 1 means it's the very first user message
     if (conversationId && messages.length === 1) {
-      const title = messages[0].content.slice(0, 80)
+      const firstUserContent = messages[0].content || ''
+      const title = firstUserContent.slice(0, 80)
       await supabase
         .from('conversations')
         .update({ title, model_id: resolvedModelId })
@@ -65,15 +67,19 @@ export async function POST(req: NextRequest) {
     const result = streamText({
       model: provider(modelString) as Parameters<typeof streamText>[0]['model'],
       messages,
-      system: `Você é o Tudo Junto, um assistente de IA inteligente e amigável. 
-Responda sempre em português do Brasil, a menos que o usuário escreva em outro idioma.
-Seja conciso, direto e útil. Use markdown quando apropriado.
-${taskUsed ? `Tarefa detectada: ${taskUsed}` : ''}`,
+      system: `Você é o Tudo Junto, um assistente de IA inteligente e amigável. \nResponda sempre em português do Brasil, a menos que o usuário escreva em outro idioma.\nSeja conciso, direto e útil. Use markdown quando apropriado.\n${taskUsed ? `Tarefa detectada: ${taskUsed}` : ''}`,
       maxTokens: 4096,
       temperature: 0.7,
       onFinish: async ({ text }) => {
-        // Persist messages to DB
+        // Persist the full updated message list to DB
         if (conversationId) {
+          // FIX: store only the NEW messages from this turn (last user + new assistant)
+          // to avoid duplicating the full history on every turn.
+          // We use the messages array from the request (which is the full history up to now)
+          // and append the assistant reply.
+          const lastUserMsg = messages[messages.length - 1]
+
+          // Fetch existing stored messages to append
           const { data: conv } = await supabase
             .from('conversations')
             .select('messages')
@@ -81,17 +87,28 @@ ${taskUsed ? `Tarefa detectada: ${taskUsed}` : ''}`,
             .eq('user_id', user.id)
             .single()
 
-          const existing = (conv?.messages as unknown[]) || []
-          const lastUser = messages[messages.length - 1]
-          const updated = [
-            ...existing,
-            { role: lastUser.role, content: lastUser.content, createdAt: new Date() },
-            { role: 'assistant', content: text, model: resolvedModelId, createdAt: new Date() },
-          ]
+          const existing = Array.isArray(conv?.messages) ? conv.messages : []
+
+          // Only append if the last stored message isn't the same as the one we're about to add
+          // (prevents duplicates on retries)
+          const lastStored = existing[existing.length - 1]
+          const isDuplicate = lastStored?.role === 'user' && lastStored?.content === lastUserMsg?.content
+
+          const newMessages = isDuplicate
+            ? [...existing.slice(0, -1)] // replace the duplicate user msg
+            : [...existing]
+
+          newMessages.push(
+            { id: crypto.randomUUID(), role: lastUserMsg.role, content: lastUserMsg.content, createdAt: new Date().toISOString() },
+            { id: crypto.randomUUID(), role: 'assistant', content: text, model: resolvedModelId, createdAt: new Date().toISOString() }
+          )
 
           await supabase
             .from('conversations')
-            .update({ messages: updated, updated_at: new Date().toISOString() })
+            .update({
+              messages: newMessages,
+              updated_at: new Date().toISOString(),
+            })
             .eq('id', conversationId)
             .eq('user_id', user.id)
         }

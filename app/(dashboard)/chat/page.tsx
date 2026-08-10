@@ -12,10 +12,6 @@ import { AIModel, Message } from '@/types'
 import { getSupabaseClient } from '@/lib/supabase-client-impl'
 import { cn } from '@/lib/utils'
 
-// Models are fetched from API to avoid exposing server-only logic
-// We'll inline a minimal client-safe list and let the server filter
-const AVAILABLE_MODELS_API = '/api/models'
-
 const STARTER_PROMPTS = [
   { icon: '💡', text: 'Me explique como funciona a inteligência artificial' },
   { icon: '💻', text: 'Escreva uma função em TypeScript para validar CPF' },
@@ -25,44 +21,55 @@ const STARTER_PROMPTS = [
 
 export default function ChatPage() {
   const { profile } = useProfile()
-  const { conversations, create, remove, updateTitle } = useConversations()
+  const { conversations, create, remove, reload } = useConversations()
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
   const [models, setModels] = useState<AIModel[]>([])
   const [selectedModel, setSelectedModel] = useState<AIModel | null>(null)
   const [smartMode, setSmartMode] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [userEmail, setUserEmail] = useState('')
-  const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Get user email
+  // Refs to avoid stale closures in callbacks
+  const activeConvIdRef = useRef<string | null>(null)
+  const smartModeRef = useRef(true)
+  const selectedModelRef = useRef<AIModel | null>(null)
+  const creatingRef = useRef(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Keep refs in sync
+  useEffect(() => { activeConvIdRef.current = activeConvId }, [activeConvId])
+  useEffect(() => { smartModeRef.current = smartMode }, [smartMode])
+  useEffect(() => { selectedModelRef.current = selectedModel }, [selectedModel])
+
   useEffect(() => {
     getSupabaseClient().auth.getUser().then(({ data }) => {
       setUserEmail(data.user?.email || '')
     })
   }, [])
 
-  // Fetch available models
   useEffect(() => {
     fetch('/api/models').then(r => r.json()).then(data => {
       if (Array.isArray(data)) {
         setModels(data)
-        if (data.length > 0 && !selectedModel) setSelectedModel(data[0])
+        if (data.length > 0) setSelectedModel(data[0])
       }
     }).catch(() => {})
   }, [])
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, setMessages } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, isLoading, setMessages, stop } = useChat({
     api: '/api/chat',
-    body: {
-      modelId: smartMode ? null : selectedModel?.id,
-      smart: smartMode,
-      conversationId: activeConvId,
-    },
-    onFinish: (msg) => {
-      const modelUsed = msg.id // placeholder — real model comes from headers
-      if (activeConvId && messages.length === 0) {
-        updateTitle(activeConvId, input.slice(0, 60) || 'Nova conversa')
-      }
+    // BUG FIX: use experimental_prepareRequestBody so conversationId is
+    // always read from the ref AT SEND TIME, not at render time.
+    experimental_prepareRequestBody: ({ messages }) => ({
+      messages,
+      conversationId: activeConvIdRef.current,
+      smart: smartModeRef.current,
+      modelId: smartModeRef.current ? null : selectedModelRef.current?.id,
+    }),
+    onFinish: async () => {
+      // Reload sidebar so new conversation appears and title is updated
+      await reload()
     },
   })
 
@@ -71,20 +78,43 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const handleNewConversation = useCallback(async () => {
-    const conv = await create()
-    setActiveConvId(conv.id)
+  // BUG FIX: auto-create conversation on first send if none exists
+  const handleSend = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!input.trim() || isLoading) return
+
+    if (!activeConvIdRef.current && !creatingRef.current) {
+      creatingRef.current = true
+      try {
+        const conv = await create()
+        setActiveConvId(conv.id)
+        activeConvIdRef.current = conv.id
+      } catch (err) {
+        console.error('Failed to create conversation', err)
+        creatingRef.current = false
+        return
+      }
+      creatingRef.current = false
+    }
+
+    handleSubmit(e)
+  }, [input, isLoading, create, handleSubmit])
+
+  const handleNewConversation = useCallback(() => {
     setMessages([])
-  }, [create, setMessages])
+    setActiveConvId(null)
+    activeConvIdRef.current = null
+    setTimeout(() => textareaRef.current?.focus(), 50)
+  }, [setMessages])
 
   const handleSelectConversation = useCallback(async (id: string) => {
     setActiveConvId(id)
-    // Load messages from DB
+    activeConvIdRef.current = id
     const r = await fetch(`/api/conversations/${id}`)
     if (r.ok) {
       const data = await r.json()
       setMessages((data.messages || []).map((m: Message) => ({
-        id: m.id || Math.random().toString(),
+        id: m.id || crypto.randomUUID(),
         role: m.role,
         content: m.content,
       })))
@@ -93,6 +123,7 @@ export default function ChatPage() {
 
   const handleStarterPrompt = (text: string) => {
     handleInputChange({ target: { value: text } } as React.ChangeEvent<HTMLInputElement>)
+    textareaRef.current?.focus()
   }
 
   const isEmpty = messages.length === 0
@@ -117,24 +148,40 @@ export default function ChatPage() {
         {/* Topbar */}
         <header className="h-12 border-b border-border bg-surface/80 backdrop-blur-sm flex items-center px-4 gap-3 shrink-0">
           <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
+            onClick={() => setSidebarOpen(v => !v)}
             className="p-1.5 rounded-lg text-text-muted hover:text-text hover:bg-bg transition-colors"
+            title={sidebarOpen ? 'Fechar sidebar' : 'Abrir sidebar'}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
 
+          {!sidebarOpen && (
+            <button
+              onClick={handleNewConversation}
+              className="p-1.5 rounded-lg text-text-muted hover:text-text hover:bg-bg transition-colors"
+              title="Nova conversa"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+          )}
+
           <div className="flex-1" />
 
-          <SmartModeButton active={smartMode} onToggle={() => setSmartMode(!smartMode)} />
+          {isLoading && (
+            <span className="text-[11px] text-text-muted/60 hidden sm:flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+              Gerando…
+            </span>
+          )}
+
+          <SmartModeButton active={smartMode} onToggle={() => setSmartMode(v => !v)} />
 
           {!smartMode && (
-            <ModelSelector
-              models={models}
-              selected={selectedModel}
-              onSelect={setSelectedModel}
-            />
+            <ModelSelector models={models} selected={selectedModel} onSelect={setSelectedModel} />
           )}
 
           {smartMode && (
@@ -190,10 +237,7 @@ export default function ChatPage() {
 
         {/* Input */}
         <div className="shrink-0 border-t border-border bg-surface/80 backdrop-blur-sm px-4 py-3">
-          <form
-            onSubmit={handleSubmit}
-            className="max-w-2xl mx-auto"
-          >
+          <form onSubmit={handleSend} className="max-w-2xl mx-auto">
             <div className={cn(
               'flex items-end gap-2 rounded-xl border bg-bg transition-all',
               isLoading
@@ -201,16 +245,17 @@ export default function ChatPage() {
                 : 'border-border focus-within:border-border-strong focus-within:shadow-sm'
             )}>
               <textarea
+                ref={textareaRef}
                 value={input}
                 onChange={handleInputChange}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
-                    if (input.trim()) handleSubmit(e as unknown as React.FormEvent)
+                    if (input.trim() && !isLoading) handleSend(e as unknown as React.FormEvent)
                   }
                 }}
                 rows={1}
-                placeholder={isLoading ? 'Gerando resposta...' : 'Mensagem... (Enter para enviar)'}
+                placeholder={isLoading ? 'Gerando resposta…' : 'Mensagem… (Enter para enviar)'}
                 disabled={isLoading}
                 className="flex-1 resize-none bg-transparent px-4 py-3 text-sm text-text placeholder:text-text-muted/50 focus:outline-none min-h-[44px] max-h-36 leading-relaxed"
                 style={{ height: 'auto' }}
@@ -220,27 +265,34 @@ export default function ChatPage() {
                   t.style.height = t.scrollHeight + 'px'
                 }}
               />
-              <button
-                type="submit"
-                disabled={isLoading || !input.trim()}
-                className={cn(
-                  'mb-2 mr-2 w-8 h-8 rounded-lg flex items-center justify-center transition-all shrink-0',
-                  input.trim() && !isLoading
-                    ? 'bg-accent text-white hover:bg-[var(--accent-hover)]'
-                    : 'bg-border text-text-muted cursor-not-allowed'
-                )}
-              >
-                {isLoading ? (
-                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+
+              {isLoading ? (
+                <button
+                  type="button"
+                  onClick={() => stop()}
+                  className="mb-2 mr-2 w-8 h-8 rounded-lg flex items-center justify-center bg-border text-text-muted hover:bg-red-500/10 hover:text-red-500 transition-all shrink-0"
+                  title="Parar geração"
+                >
+                  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="6" width="12" height="12" rx="1" />
                   </svg>
-                ) : (
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!input.trim()}
+                  className={cn(
+                    'mb-2 mr-2 w-8 h-8 rounded-lg flex items-center justify-center transition-all shrink-0',
+                    input.trim()
+                      ? 'bg-accent text-white hover:bg-[var(--accent-hover)]'
+                      : 'bg-border text-text-muted cursor-not-allowed'
+                  )}
+                >
                   <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 12h14M12 5l7 7-7 7" />
                   </svg>
-                )}
-              </button>
+                </button>
+              )}
             </div>
             <p className="text-center text-[11px] text-text-muted/40 mt-2">
               Shift+Enter para quebrar linha · Tudo Junto pode cometer erros
