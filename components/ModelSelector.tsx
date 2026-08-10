@@ -72,7 +72,7 @@ export function ModelSelector({ models, selected, onSelect }: Props) {
 
       {open && (
         <div className={cn(
-          'absolute bottom-full mb-2 left-0 z-50 w-80',
+          'absolute top-full mt-2 right-0 z-50 w-80',
           'bg-surface border border-border rounded-xl shadow-lg shadow-black/10',
           'overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-150'
         )}>
