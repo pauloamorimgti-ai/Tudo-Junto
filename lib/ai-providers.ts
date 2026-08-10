@@ -72,6 +72,18 @@ export const getProvider = (provider: string) => {
         baseURL: 'https://api.perplexity.ai',
         headers: { Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}` },
       })
+    case 'cerebras':
+      return createOpenAICompatible({
+        name: 'cerebras',
+        baseURL: 'https://api.cerebras.ai/v1',
+        headers: { Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}` },
+      })
+    case 'sambanova':
+      return createOpenAICompatible({
+        name: 'sambanova',
+        baseURL: 'https://api.sambanova.ai/v1',
+        headers: { Authorization: `Bearer ${process.env.SAMBANOVA_API_KEY}` },
+      })
     default:
       throw new Error(`Provider "${provider}" não reconhecido`)
   }
@@ -381,6 +393,60 @@ const ALL_MODELS: AIModel[] = [
     icon: '𝕏',
   },
 
+  // ── Cerebras (free tier) ──
+  {
+    id: 'cerebras/llama3.1-8b',
+    name: 'Llama 3.1 8B (Cerebras)',
+    provider: 'cerebras',
+    description: 'Llama ultrarrápido via chip Cerebras — o mais veloz disponível',
+    contextWindow: 8192,
+    free: true,
+    tags: ['fast'],
+    icon: '🧩',
+  },
+  {
+    id: 'cerebras/llama3.1-70b',
+    name: 'Llama 3.1 70B (Cerebras)',
+    provider: 'cerebras',
+    description: 'Llama 70B com velocidade absurda via Cerebras',
+    contextWindow: 8192,
+    free: true,
+    tags: ['fast', 'smart'],
+    icon: '🧩',
+  },
+
+  // ── SambaNova (free tier) ──
+  {
+    id: 'sambanova/Meta-Llama-3.3-70B-Instruct',
+    name: 'Llama 3.3 70B (SambaNova)',
+    provider: 'sambanova',
+    description: 'Llama 70B via SambaNova — rápido e gratuito',
+    contextWindow: 128000,
+    free: true,
+    tags: ['fast', 'smart'],
+    icon: '🔵',
+  },
+  {
+    id: 'sambanova/DeepSeek-R1',
+    name: 'DeepSeek R1 (SambaNova)',
+    provider: 'sambanova',
+    description: 'DeepSeek R1 via SambaNova — raciocínio gratuito',
+    contextWindow: 32000,
+    free: true,
+    tags: ['reasoning', 'smart'],
+    icon: '🔵',
+  },
+  {
+    id: 'sambanova/Meta-Llama-3.1-405B-Instruct',
+    name: 'Llama 3.1 405B (SambaNova)',
+    provider: 'sambanova',
+    description: 'Modelo gigante 405B gratuito via SambaNova',
+    contextWindow: 16384,
+    free: true,
+    tags: ['smart', 'reasoning', 'code'],
+    icon: '🔵',
+  },
+
   // ── Perplexity (paid) ──
   {
     id: 'perplexity/sonar-pro',
@@ -409,6 +475,8 @@ export function getAvailableModels(): AIModel[] {
     xai: 'XAI_API_KEY',
     deepseek: 'DEEPSEEK_API_KEY',
     perplexity: 'PERPLEXITY_API_KEY',
+    cerebras: 'CEREBRAS_API_KEY',
+    sambanova: 'SAMBANOVA_API_KEY',
   }
 
   return ALL_MODELS.filter((m) => hasKey(keyMap[m.provider] || ''))
