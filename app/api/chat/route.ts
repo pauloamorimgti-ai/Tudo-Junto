@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     }
 
     const result = streamText({
-      model: provider(modelString),
+      model: provider(modelString) as Parameters<typeof streamText>[0]['model'],
       messages,
       system: `Você é o Tudo Junto, um assistente de IA inteligente e amigável. 
 Responda sempre em português do Brasil, a menos que o usuário escreva em outro idioma.
